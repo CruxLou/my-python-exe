@@ -3,9 +3,9 @@ block_cipher = None
 
 # 把下面的入口改成你的实际脚本路径：
 # 如果你保留空格路径：
-entry_script = r'src/for lab/main.py'
+entry_script = r'src/for_lab.py'
 # 更推荐的改名后写法（无空格）：
-# entry_script = 'src/for_lab/main.py'
+# entry_script = 'src/for_lab.py'
 
 datas = [
     # 如需打包资源文件在此添加：('assets/icon.ico', '.'),
