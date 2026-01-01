@@ -51,15 +51,15 @@ jobs:
         run: |
           Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
 
-          if (!(Test-Path "src/main.py")) {
-            Write-Error "Entry script not found: src/main.py"
+          if (!(Test-Path "src/for_lab.py")) {
+            Write-Error "Entry script not found: src/for_lab.py"
             exit 1
           }
 
           pyinstaller --clean --onefile --console --name app.exe `
             --workpath build --distpath dist `
             --hidden-import win32timezone `
-            src/main.py
+            src/for_lab.py
 
           Write-Host "Dist contents:"
           Get-ChildItem -Force dist
