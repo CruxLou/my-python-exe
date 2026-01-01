@@ -47,12 +47,17 @@ jobs:
         run: |
           Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
           # 关键：入口脚本必须存在，先检查
-          if (!(Test-Path "src/for_lab/main.py")) {
-            Write-Error "Entry script not found: src/for_lab/main.py"
+          
+if (!(Test-Path "src/main.py")) {
+            Write-Error "Entry script not found: src/main.py"
             exit 1
           }
-          # 常见坑：pywin32 需要隐藏导入 win32timezone
-          pyinstaller --clean --onefile --console --name app.exe --workpath build --distpath dist src/for_lab/main.py --hidden-import win32timezone
+
+          pyinstaller --clean --onefile --console --name app.exe `
+            --workpath build --distpath dist `
+            --hidden-import win32timezone `
+            src/main.py
+ --hidden-import win32timezone
           Write-Host "Dist contents:"
           Get-ChildItem dist
 
