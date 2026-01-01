@@ -3,11 +3,9 @@ name: Windows EXE Build (PyInstaller)
 on:
   push:
     branches: ["main"]
-  workflow_dispatch:
-  # 可选：带 tag 自动发布
-  push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 jobs:
   build:
@@ -51,7 +49,7 @@ jobs:
         run: |
           Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
           # 保留空格路径时请用引号：
-          pyinstaller --clean --onefile --console --name app.exe --workpath build --distpath dist "src/for lab/main.py"
+          pyinstaller --clean --onefile --console --name app.exe --workpath build --distpath dist "src/for_lab/main.py"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
