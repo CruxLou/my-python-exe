@@ -1,10 +1,8 @@
-name: Windows EXE Build (PyInstaller)
+name: Windows EXE Build (PyInstaller - minimal)
 
 on:
   push:
     branches: ["main"]
-    tags:
-      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -14,6 +12,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Show repo tree (diagnostic)
+        shell: pwsh
+        run: |
+          Write-Host "Repository tree:"
+          Get-ChildItem -Recurse | Select-Object FullName
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -29,27 +33,28 @@ jobs:
             ${{ runner.os }}-pip-
 
       - name: Install dependencies
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          if exist requirements.txt (
+          if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
-          )
-          python -m pip install pyinstaller
+          }
+          # 保险起见：明确安装 pywin32
+          python -m pip install pywin32
 
-      - name: Build (PyInstaller via spec)  # 如果你采用方案 A
-        if: ${{ hashFiles('pyinstaller.spec') != '' }}
+      - name: Build EXE (entry script)
         shell: pwsh
         run: |
           Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
-          pyinstaller --clean --onefile --console --name app.exe --specpath . --workpath build --distpath dist pyinstaller.spec
-
-      - name: Build (PyInstaller via entry) # 如果你采用方案 B
-        if: ${{ hashFiles('pyinstaller.spec') == '' }}
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
-          # 保留空格路径时请用引号：
-          pyinstaller --clean --onefile --console --name app.exe --workpath build --distpath dist "src/for_lab/main.py"
+          # 关键：入口脚本必须存在，先检查
+          if (!(Test-Path "src/for_lab/main.py")) {
+            Write-Error "Entry script not found: src/for_lab/main.py"
+            exit 1
+          }
+          # 常见坑：pywin32 需要隐藏导入 win32timezone
+          pyinstaller --clean --onefile --console --name app.exe --workpath build --distpath dist src/for_lab/main.py --hidden-import win32timezone
+          Write-Host "Dist contents:"
+          Get-ChildItem dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
