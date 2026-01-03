@@ -66,29 +66,26 @@ def load_signature_folder(base_dir: Path):
     读取 base_dir/signature 下的签名资源。
     约定：名字 = 文件名 stem（不含扩展名），图片= jpg/jpeg/png
     返回：
-      sig_names: 所有stem去重列表
       img_map: {name_lower: image_path}
     """
     sig_dir = base_dir / "signature"
-    sig_names = []
     img_map = {}
 
     if not sig_dir.exists() or not sig_dir.is_dir():
         print(f"[WARN] signature folder not found: {sig_dir}")
-        return sig_names, img_map
+        return img_map
 
+    names = []
     for f in sig_dir.iterdir():
         if not f.is_file():
             continue
-
-        sig_names.append(f.stem)
-
+        names.append(f.stem)
         if f.suffix.lower() in (".jpg", ".jpeg", ".png"):
             img_map[f.stem.lower()] = f
 
-    sig_names = sorted(set(sig_names))
-    print(f"[INFO] signature names(stem): {sig_names}")
-    return sig_names, img_map
+    names = sorted(set(names))
+    print(f"[INFO] signature names(stem): {names}")
+    return img_map
 
 
 def insert_signatures_on_first_page(pdf_in: Path, pdf_out: Path, img_map: dict,
@@ -105,13 +102,17 @@ def insert_signatures_on_first_page(pdf_in: Path, pdf_out: Path, img_map: dict,
     返回 inserted_count
 
     关键点：
-    - 使用 page.get_text("words") 获取词和坐标（用于定位）。[3](https://deepwiki.com/pyinstaller/pyinstaller/4.1-understanding-and-writing-hooks)
-    - background=True 时使用 overlay=False，把图片放到背景层不遮挡文字。[1](https://github.com/pymupdf/PyMuPDF/discussions/3717)[2](https://developer.aliyun.com/article/1559433)
+    - 用 page.get_text("words") 获取词与坐标用于定位。[2](https://github.com/pyinstaller/pyinstaller/blob/develop/doc/spec-files.rst)
+    - background=True 时 overlay=False -> 图片在背景层不遮挡文字。[1](https://github.com/pymupdf/PyMuPDF/issues/1976)
     """
     try:
         import fitz  # PyMuPDF
     except ImportError:
         print("[FATAL] PyMuPDF (fitz) not installed. Please 'pip install pymupdf'.")
+        return 0
+
+    if not pdf_in.exists():
+        print(f"[WARN] PDF not found: {pdf_in}")
         return 0
 
     doc = fitz.open(str(pdf_in))
@@ -122,12 +123,11 @@ def insert_signatures_on_first_page(pdf_in: Path, pdf_out: Path, img_map: dict,
 
         page = doc[0]
 
-        # 读取第一页所有单词及坐标 (x0, y0, x1, y1, word, block, line, word_no)
-        words = page.get_text("words")  # word-level + coordinates [3](https://deepwiki.com/pyinstaller/pyinstaller/4.1-understanding-and-writing-hooks)
+        # 词级别提取 (x0, y0, x1, y1, word, block, line, word_no)
+        words = page.get_text("words")  # [2](https://github.com/pyinstaller/pyinstaller/blob/develop/doc/spec-files.rst)
         words.sort(key=lambda w: (w[1], w[0]))  # 阅读顺序
 
         inserted = 0
-
         for w in words:
             if inserted >= target_count:
                 break
@@ -144,7 +144,7 @@ def insert_signatures_on_first_page(pdf_in: Path, pdf_out: Path, img_map: dict,
             if not img_path:
                 continue
 
-            # 计算签名图片显示尺寸：宽固定，高度=按比例 * height_scale（你要求高度减半）
+            # 计算显示尺寸：宽固定，高度按比例并 * height_scale（你要求高度减半）
             try:
                 pix = fitz.Pixmap(str(img_path))
                 w_px, h_px = pix.width, pix.height
@@ -155,12 +155,11 @@ def insert_signatures_on_first_page(pdf_in: Path, pdf_out: Path, img_map: dict,
             aspect = h_px / max(w_px, 1)
             img_h_pt = img_width_pt * aspect * height_scale
 
-            # 以单词左上角为锚点，可微调偏移
             rx0 = x0 + x_offset_pt
             ry0 = y0 + y_offset_pt
             rect_img = fitz.Rect(rx0, ry0, rx0 + img_width_pt, ry0 + img_h_pt)
 
-            # overlay=False => 放到背景层（不遮挡文字）[1](https://github.com/pymupdf/PyMuPDF/discussions/3717)[2](https://developer.aliyun.com/article/1559433)
+            # overlay=False => 背景层（不遮挡文字）[1](https://github.com/pymupdf/PyMuPDF/issues/1976)
             overlay_flag = False if background else True
 
             page.insert_image(
@@ -185,31 +184,35 @@ def insert_signatures_on_first_page(pdf_in: Path, pdf_out: Path, img_map: dict,
 # =========================================================
 def process_document(app, file_path: str, img_map: dict):
     """
-    Step 1:
-      - 导出原始 PDF：xxx.pdf
-      - 删除第2表格后内容 + 替换页眉
-      - 导出 Summary PDF：xxx_Summary.pdf
+    最终只保留两份 PDF：
+      1) {stem}_Signed.pdf
+      2) {stem}_Summary_Signed.pdf   （你要求 Summary 加签名后用这个名字）
 
-    Step 2:
-      - 对 Summary PDF 本身插入签名（覆盖写回）
-      - 额外生成 Signed 备份：xxx_Signed.pdf
+    中间文件会删除（但仅当签名输出成功后才删除）：
+      - {stem}.pdf
+      - {stem}_Summary.pdf
     """
     p = Path(file_path)
     folder = p.parent
     stem = p.stem
 
-    doc = None
-    summary_pdf = None
+    # 中间未签名文件
+    raw_pdf = folder / f"{stem}.pdf"
+    summary_pdf = folder / f"{stem}_Summary.pdf"
 
+    # 最终保留文件
+    raw_signed_pdf = folder / f"{stem}_Signed.pdf"
+    summary_signed_pdf = folder / f"{stem}_Summary_Signed.pdf"
+
+    doc = None
     try:
         doc = app.Documents.Open(str(p))
 
-        # 1) 原始 PDF
-        pdf_path = folder / f"{stem}.pdf"
-        word_to_pdf(doc, pdf_path)
-        print(f"[OK] Export original PDF: {pdf_path}")
+        # 1) 原始 PDF（未修改）
+        word_to_pdf(doc, raw_pdf)
+        print(f"[OK] Export original PDF: {raw_pdf}")
 
-        # 2) 删除第二个表格之后内容
+        # 2) 修改内容
         delete_after_second_table(doc)
 
         # 3) 页眉替换
@@ -219,8 +222,7 @@ def process_document(app, file_path: str, img_map: dict):
             replace_in_header_range(header_range, "Test Plan", "Test Report")
             replace_in_header_range(header_range, "Attachment", "")
 
-        # 4) Summary PDF
-        summary_pdf = folder / f"{stem}_Summary.pdf"
+        # 4) Summary PDF（未签名）
         word_to_pdf(doc, summary_pdf)
         print(f"[OK] Export summary PDF: {summary_pdf}")
 
@@ -236,39 +238,30 @@ def process_document(app, file_path: str, img_map: dict):
             except Exception:
                 pass
 
-    # Step 2: PDF 签名
+    # ---------- Step 2: PDF 插入签名 ----------
     try:
         if not img_map:
             print("No found signature")
+            # 不删中间文件，避免丢失
             return True
 
-        # (A) Summary PDF 本身也需要插签名 —— 覆盖写回
-        tmp_summary = folder / f"{stem}_Summary_tmp.pdf"
-        inserted_summary = insert_signatures_on_first_page(
-            pdf_in=summary_pdf,
-            pdf_out=tmp_summary,
+        # A) 原始 PDF -> Signed
+        inserted_raw = insert_signatures_on_first_page(
+            pdf_in=raw_pdf,
+            pdf_out=raw_signed_pdf,
             img_map=img_map,
             target_count=2,
             img_width_pt=120,
-            height_scale=0.5,   # ✅ 高度减半
+            height_scale=0.5,      # ✅ 高度减半
             x_offset_pt=0,
             y_offset_pt=-5,
-            background=True     # ✅ 背景层，不遮挡文字 [1](https://github.com/pymupdf/PyMuPDF/discussions/3717)[2](https://developer.aliyun.com/article/1559433)
+            background=True        # ✅ 背景层不遮挡文字 [1](https://github.com/pymupdf/PyMuPDF/issues/1976)
         )
 
-        # 覆盖写回 Summary
-        if tmp_summary.exists():
-            try:
-                summary_pdf.unlink(missing_ok=True)
-            except Exception:
-                pass
-            tmp_summary.replace(summary_pdf)
-
-        # (B) 额外生成一个 Signed 备份文件（方便你对比/归档）
-        signed_pdf = folder / f"{stem}_Signed.pdf"
-        inserted_signed = insert_signatures_on_first_page(
+        # B) Summary PDF -> Summary_Signed（你要求的命名）
+        inserted_sum = insert_signatures_on_first_page(
             pdf_in=summary_pdf,
-            pdf_out=signed_pdf,
+            pdf_out=summary_signed_pdf,
             img_map=img_map,
             target_count=2,
             img_width_pt=120,
@@ -278,17 +271,26 @@ def process_document(app, file_path: str, img_map: dict):
             background=True
         )
 
-        # 提示逻辑：你要求“如果所有名字都出现 <2 次 才提示 No found signature”
-        # 这里用 inserted_summary 来判断：插入次数 < 2 说明第一页合计命中不足 2
-        if inserted_summary < 2:
+        # 你的规则：如果“所有名字都出现<2次”，等价于插入总数 < 2 时提示
+        # 这里分别对 raw 和 summary 判断，你也可以只判断 summary（看你更关注哪份）
+        if inserted_raw < 2 or inserted_sum < 2:
             print("No found signature")
 
-        print(f"[OK] Summary signed (in-place): {summary_pdf} (inserted={inserted_summary})")
-        print(f"[OK] Signed PDF saved: {signed_pdf} (inserted={inserted_signed})")
+        # 只有当最终文件生成成功才删除中间文件，避免丢文件
+        if raw_signed_pdf.exists() and summary_signed_pdf.exists():
+            for f in (raw_pdf, summary_pdf):
+                try:
+                    if f.exists():
+                        f.unlink()
+                except Exception:
+                    pass
+
+        print(f"[OK] Keep: {raw_signed_pdf} (inserted={inserted_raw})")
+        print(f"[OK] Keep: {summary_signed_pdf} (inserted={inserted_sum})")
         return True
 
     except Exception as e:
-        print(f"[Error] processing PDF signature: {summary_pdf}\n{e}")
+        print(f"[Error] processing PDF signature\n{e}")
         traceback.print_exc()
         return False
 
@@ -302,7 +304,7 @@ def main():
         base_dir = get_base_dir()
         print(f"[INFO] Scan folder: {base_dir}")
 
-        sig_names, sig_img_map = load_signature_folder(base_dir)
+        img_map = load_signature_folder(base_dir)
 
         # 扫描 Word 文件（exe 同目录）
         word_files = [
@@ -326,7 +328,7 @@ def main():
         for p in word_files:
             processed += 1
             print(f"[INFO] Processing: {p.name}")
-            if process_document(word, str(p), sig_img_map):
+            if process_document(word, str(p), img_map):
                 success += 1
 
         print("PDF transfer done")
