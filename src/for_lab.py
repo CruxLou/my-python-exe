@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 import os
 import sys
@@ -9,11 +8,12 @@ import win32com.client as win32
 from win32com.client import constants
 
 
+# ---------------------------
+# Word helper functions
+# ---------------------------
 def replace_in_header_range(header_range, find_text, replace_text):
     """在指定 Range 内做查找替换（全部替换）。"""
     find = header_range.Find
-
-    # ✅ Word COM：清格式应作用于 Find 和 Replacement
     find.ClearFormatting()
     find.Replacement.ClearFormatting()
 
@@ -27,7 +27,7 @@ def replace_in_header_range(header_range, find_text, replace_text):
     find.MatchWildcards = False
     find.MatchSoundsLike = False
     find.MatchAllWordForms = False
-    find.Format = False  # ✅ 不按格式匹配，更稳定
+    find.Format = False
 
     find.Execute(Replace=constants.wdReplaceAll)
 
@@ -42,19 +42,133 @@ def delete_after_second_table(doc):
     tables = doc.Tables
     if tables.Count >= 2:
         tbl2 = tables.Item(2)
-        start = tbl2.Range.End
-        end = doc.Content.End
-        rng = doc.Range(Start=start, End=end)
+        rng = doc.Range(Start=tbl2.Range.End, End=doc.Content.End)
         rng.Delete()
 
 
-def process_document(app, file_path: str):
+# ---------------------------
+# Runtime paths
+# ---------------------------
+def get_base_dir() -> Path:
+    """EXE：exe 所在目录；py：脚本所在目录。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+# ---------------------------
+# Signature (PDF) helpers
+# ---------------------------
+def load_signature_folder(base_dir: Path):
     """
-    处理单个文档：
-      1) 原始保存 PDF
-      2) 删除第 2 个表格之后内容
-      3) 替换页眉文本
-      4) 保存 Summary PDF
+    读取 base_dir/signature 下的签名资源。
+    约定：
+      - 名字 = 文件名 stem（不含扩展名）
+      - 签名图片 = signature/名字.jpg 或 png
+    返回：
+      names: [名字1, 名字2...]
+      img_map: {名字lower: Path_to_image}
+    """
+    sig_dir = base_dir / "signature"
+    names = []
+    img_map = {}
+
+    if not sig_dir.exists() or not sig_dir.is_dir():
+        print(f"[WARN] signature folder not found: {sig_dir}")
+        return names, img_map
+
+    for f in sig_dir.iterdir():
+        if not f.is_file():
+            continue
+
+        # 记录所有“文档名称/名字”（你要求的记录）
+        names.append(f.stem)
+
+        # 只把图片加入 map
+        if f.suffix.lower() in (".jpg", ".jpeg", ".png"):
+            img_map[f.stem.lower()] = f
+
+    print(f"[INFO] signature names(stem): {sorted(set(names))}")
+    return sorted(set(names)), img_map
+
+
+def sign_pdf_by_names_first_page(pdf_in: Path, pdf_out: Path, names, img_map,
+                                 need_count=2, img_width_pt=120, y_offset_pt=-5):
+    """
+    在 PDF 首页搜索 names（名字列表），若命中则在该文字位置插入对应图片。
+    - need_count：需要插入的签名数量（你要求 2 个位置）
+    - img_width_pt：图片宽度（PDF point）
+    - y_offset_pt：插入时 y 方向微调（负值表示略往上）
+    返回：插入数量 inserted
+    """
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        print("[FATAL] PyMuPDF (fitz) not installed. Please 'pip install pymupdf'.")
+        return 0
+
+    inserted = 0
+
+    doc = fitz.open(str(pdf_in))
+    try:
+        if doc.page_count < 1:
+            return 0
+
+        page = doc[0]  # 只处理第一页
+
+        # 依次用 signature 文件夹里的“名字”去搜
+        for name in names:
+            key = name.lower()
+            img = img_map.get(key)
+            if not img:
+                continue
+
+            # 搜索名字出现的位置（返回矩形列表）
+            rects = page.search_for(name)
+            if not rects:
+                continue
+
+            for r in rects:
+                # 计算插入图片矩形：以文字矩形左边为锚，图片宽度固定，高度按图片比例缩放
+                # 先拿图片尺寸（像素）换算比例，保持不变形
+                try:
+                    pix = fitz.Pixmap(str(img))
+                    w_px, h_px = pix.width, pix.height
+                    pix = None
+                except Exception:
+                    w_px, h_px = 300, 120  # 兜底
+
+                aspect = h_px / max(w_px, 1)
+                img_h_pt = img_width_pt * aspect
+
+                # 把签名贴在“文字位置”附近：默认贴在文字矩形的左上角区域
+                x0 = r.x0
+                y0 = r.y0 + y_offset_pt
+                rect_img = fitz.Rect(x0, y0, x0 + img_width_pt, y0 + img_h_pt)
+
+                page.insert_image(rect_img, filename=str(img), keep_proportion=True, overlay=True)
+
+                inserted += 1
+                if inserted >= need_count:
+                    break
+
+            if inserted >= need_count:
+                break
+
+        doc.save(str(pdf_out))
+        return inserted
+
+    finally:
+        doc.close()
+
+
+# ---------------------------
+# Document processing
+# ---------------------------
+def process_document(app, file_path: str, sig_names, sig_img_map):
+    """
+    Step 1: Word 处理 + 导出 PDF
+    Step 2: 对 Summary PDF 进行签名贴图 -> Signed PDF
     """
     p = Path(file_path)
     folder = p.parent
@@ -69,34 +183,23 @@ def process_document(app, file_path: str):
         word_to_pdf(doc, pdf_path)
         print(f"[OK] Export original PDF: {pdf_path}")
 
-        # 2) 删除第二表格后内容
+        # 2) 修改内容
         delete_after_second_table(doc)
 
-        # 3) 页眉替换（每个 section）
+        # 3) 页眉替换
         for sec in doc.Sections:
             header = sec.Headers.Item(constants.wdHeaderFooterPrimary)
-
-            # ✅ 有些文档 section 的 header 可能不存在
-            try:
-                if hasattr(header, "Exists") and not header.Exists:
-                    continue
-            except Exception:
-                pass
-
             header_range = header.Range
-
             replace_in_header_range(header_range, "Test Plan", "Test Report")
             replace_in_header_range(header_range, "Attachment", "")
 
         # 4) Summary PDF
-        summary_pdf_path = folder / f"{stem}_Summary.pdf"
-        word_to_pdf(doc, summary_pdf_path)
-        print(f"[OK] Export summary PDF: {summary_pdf_path}")
-
-        return True
+        summary_pdf = folder / f"{stem}_Summary.pdf"
+        word_to_pdf(doc, summary_pdf)
+        print(f"[OK] Export summary PDF: {summary_pdf}")
 
     except Exception as e:
-        print(f"[Error] processing: {file_path}\n{e}")
+        print(f"[Error] processing Word: {file_path}\n{e}")
         traceback.print_exc()
         return False
 
@@ -107,28 +210,46 @@ def process_document(app, file_path: str):
             except Exception:
                 pass
 
+    # ----------------------
+    # Step 2: PDF 签名贴图
+    # ----------------------
+    try:
+        signed_pdf = folder / f"{stem}_Signed.pdf"
+        inserted = sign_pdf_by_names_first_page(
+            pdf_in=summary_pdf,
+            pdf_out=signed_pdf,
+            names=sig_names,
+            img_map=sig_img_map,
+            need_count=2,
+            img_width_pt=120,
+            y_offset_pt=-5
+        )
 
-def get_scan_dir() -> Path:
-    """
-    扫描目录：
-    - EXE：exe 所在目录（最符合双击习惯）
-    - .py：脚本所在目录
-    """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+        if inserted < 2:
+            print("No found signature")
+        else:
+            print(f"[OK] Signature inserted: {inserted} -> {signed_pdf}")
+
+        return True
+
+    except Exception as e:
+        print(f"[Error] processing PDF signature: {summary_pdf}\n{e}")
+        traceback.print_exc()
+        return False
 
 
 def main():
     word = None
     try:
-        scan_dir = get_scan_dir()
-        print(f"[INFO] Scan folder: {scan_dir}")
+        base_dir = get_base_dir()
+        print(f"[INFO] Scan folder: {base_dir}")
 
-        word_files = [
-            p for p in scan_dir.iterdir()
-            if p.is_file() and p.suffix.lower() in (".doc", ".docx")
-        ]
+        # 读取 signature 文件夹
+        sig_names, sig_img_map = load_signature_folder(base_dir)
+
+        # 扫描 Word 文件
+        word_files = [p for p in base_dir.iterdir()
+                      if p.is_file() and p.suffix.lower() in (".doc", ".docx")]
 
         if not word_files:
             print("No found docx doc")
@@ -142,13 +263,11 @@ def main():
         except Exception:
             pass
 
-        processed = 0
-        success = 0
-
+        processed, success = 0, 0
         for p in word_files:
             processed += 1
             print(f"[INFO] Processing: {p.name}")
-            if process_document(word, str(p)):
+            if process_document(word, str(p), sig_names, sig_img_map):
                 success += 1
 
         print("PDF transfer done")
@@ -165,7 +284,6 @@ def main():
             except Exception:
                 pass
 
-        # ✅ 不自动关闭窗口
         print("\nPress Enter to exit...")
         try:
             input()
