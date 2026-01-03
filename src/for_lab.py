@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 import os
 import sys
@@ -9,13 +10,16 @@ from win32com.client import constants
 
 
 def replace_in_header_range(header_range, find_text, replace_text):
-    """在页眉范围内执行查找替换（全部替换）。"""
+    """在指定 Range 内做查找替换（全部替换）。"""
     find = header_range.Find
+
+    # ✅ Word COM：清格式应作用于 Find 和 Replacement
     find.ClearFormatting()
-    header_range.ClearFormatting()
+    find.Replacement.ClearFormatting()
 
     find.Text = find_text
     find.Replacement.Text = replace_text
+
     find.Forward = True
     find.Wrap = constants.wdFindContinue
     find.MatchCase = False
@@ -23,6 +27,7 @@ def replace_in_header_range(header_range, find_text, replace_text):
     find.MatchWildcards = False
     find.MatchSoundsLike = False
     find.MatchAllWordForms = False
+    find.Format = False  # ✅ 不按格式匹配，更稳定
 
     find.Execute(Replace=constants.wdReplaceAll)
 
@@ -35,7 +40,6 @@ def word_to_pdf(doc, pdf_path: Path):
 def delete_after_second_table(doc):
     """查找第 2 个表格，并删除该表格之后的所有内容。"""
     tables = doc.Tables
-    # ✅ 必须是 >=，不能出现 &gt;= 或 &amp;gt;=
     if tables.Count >= 2:
         tbl2 = tables.Item(2)
         start = tbl2.Range.End
@@ -60,18 +64,31 @@ def process_document(app, file_path: str):
     try:
         doc = app.Documents.Open(str(p))
 
+        # 1) 原始 PDF
         pdf_path = folder / f"{stem}.pdf"
         word_to_pdf(doc, pdf_path)
         print(f"[OK] Export original PDF: {pdf_path}")
 
+        # 2) 删除第二表格后内容
         delete_after_second_table(doc)
 
+        # 3) 页眉替换（每个 section）
         for sec in doc.Sections:
             header = sec.Headers.Item(constants.wdHeaderFooterPrimary)
+
+            # ✅ 有些文档 section 的 header 可能不存在
+            try:
+                if hasattr(header, "Exists") and not header.Exists:
+                    continue
+            except Exception:
+                pass
+
             header_range = header.Range
+
             replace_in_header_range(header_range, "Test Plan", "Test Report")
             replace_in_header_range(header_range, "Attachment", "")
 
+        # 4) Summary PDF
         summary_pdf_path = folder / f"{stem}_Summary.pdf"
         word_to_pdf(doc, summary_pdf_path)
         print(f"[OK] Export summary PDF: {summary_pdf_path}")
@@ -93,9 +110,9 @@ def process_document(app, file_path: str):
 
 def get_scan_dir() -> Path:
     """
-    获取扫描目录：
-    - 打包成 EXE：用 exe 所在目录（最符合双击使用习惯）
-    - 直接跑 .py：用脚本所在目录
+    扫描目录：
+    - EXE：exe 所在目录（最符合双击习惯）
+    - .py：脚本所在目录
     """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
@@ -103,19 +120,13 @@ def get_scan_dir() -> Path:
 
 
 def main():
-    """
-    扫描“当前目录”下的 doc/docx 并批处理。
-    - 没找到：打印 'No found docx doc'
-    - 全部转换完成：打印 'PDF transfer done'
-    - 不自动关闭窗口：等待用户按回车
-    """
     word = None
     try:
-        script_dir = get_scan_dir()
-        print(f"[INFO] Scan folder: {script_dir}")
+        scan_dir = get_scan_dir()
+        print(f"[INFO] Scan folder: {scan_dir}")
 
         word_files = [
-            p for p in script_dir.iterdir()
+            p for p in scan_dir.iterdir()
             if p.is_file() and p.suffix.lower() in (".doc", ".docx")
         ]
 
@@ -154,7 +165,7 @@ def main():
             except Exception:
                 pass
 
-        # ✅ 关键：不自动关闭窗口
+        # ✅ 不自动关闭窗口
         print("\nPress Enter to exit...")
         try:
             input()
