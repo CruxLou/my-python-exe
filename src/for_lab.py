@@ -9,9 +9,7 @@ from win32com.client import constants
 
 
 def replace_in_header_range(header_range, find_text, replace_text):
-    """
-    在页眉范围内执行查找替换（全部替换）。
-    """
+    """在页眉范围内执行查找替换（全部替换）。"""
     find = header_range.Find
     find.ClearFormatting()
     header_range.ClearFormatting()
@@ -30,18 +28,14 @@ def replace_in_header_range(header_range, find_text, replace_text):
 
 
 def word_to_pdf(doc, pdf_path: Path):
-    """
-    将当前 Word 文档保存为 PDF。
-    """
+    """将当前 Word 文档保存为 PDF。"""
     doc.SaveAs(str(pdf_path), FileFormat=constants.wdFormatPDF)
 
 
 def delete_after_second_table(doc):
-    """
-    查找第 2 个表格，并删除该表格之后的所有内容。
-    """
+    """查找第 2 个表格，并删除该表格之后的所有内容。"""
     tables = doc.Tables
-    # ✅ 修复：这里必须是 >=，不能是 &gt;=
+    # ✅ 必须是 >=，不能出现 &gt;= 或 &amp;gt;=
     if tables.Count >= 2:
         tbl2 = tables.Item(2)
         start = tbl2.Range.End
@@ -82,7 +76,7 @@ def process_document(app, file_path: str):
         word_to_pdf(doc, summary_pdf_path)
         print(f"[OK] Export summary PDF: {summary_pdf_path}")
 
-        return True  # ✅ 表示成功处理过该文件
+        return True
 
     except Exception as e:
         print(f"[Error] processing: {file_path}\n{e}")
@@ -97,56 +91,75 @@ def process_document(app, file_path: str):
                 pass
 
 
+def get_scan_dir() -> Path:
+    """
+    获取扫描目录：
+    - 打包成 EXE：用 exe 所在目录（最符合双击使用习惯）
+    - 直接跑 .py：用脚本所在目录
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
 def main():
     """
     扫描“当前目录”下的 doc/docx 并批处理。
     - 没找到：打印 'No found docx doc'
     - 全部转换完成：打印 'PDF transfer done'
+    - 不自动关闭窗口：等待用户按回车
     """
-
-    # 你说的“当前目录”：用工作目录最符合直觉
-    # 注意：双击 exe 时，工作目录可能不是 exe 所在目录
-    # 如果你希望“以 exe 所在目录为准”，把下面 script_dir 换成 Path(sys.executable).parent
-    Path(sys.executable).parent = Path(os.getcwd())
-
-    # 找 doc/docx
-    word_files = [
-        p for p in script_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in (".doc", ".docx")
-    ]
-
-    if not word_files:
-        print("No found docx doc")
-        return
-
-    # 启动 Word
-    word = win32.gencache.EnsureDispatch("Word.Application")
-    word.Visible = False
+    word = None
     try:
-        word.DisplayAlerts = 0
-    except Exception:
-        pass
+        script_dir = get_scan_dir()
+        print(f"[INFO] Scan folder: {script_dir}")
 
-    processed = 0
-    success = 0
+        word_files = [
+            p for p in script_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in (".doc", ".docx")
+        ]
 
-    try:
+        if not word_files:
+            print("No found docx doc")
+            return
+
+        # 启动 Word
+        word = win32.gencache.EnsureDispatch("Word.Application")
+        word.Visible = False
+        try:
+            word.DisplayAlerts = 0
+        except Exception:
+            pass
+
+        processed = 0
+        success = 0
+
         for p in word_files:
             processed += 1
             print(f"[INFO] Processing: {p.name}")
             if process_document(word, str(p)):
                 success += 1
 
-    finally:
-        try:
-            word.Quit()
-        except Exception:
-            pass
+        print("PDF transfer done")
+        print(f"[INFO] Done. Total: {processed}, Success: {success}")
 
-    # 你要求的完成提示
-    print("PDF transfer done")
-    # 可选：再给个统计信息，方便你确认确实处理了文件
-    print(f"[INFO] Done. Total: {processed}, Success: {success}")
+    except Exception as e:
+        print(f"[FATAL] {e}")
+        traceback.print_exc()
+
+    finally:
+        if word is not None:
+            try:
+                word.Quit()
+            except Exception:
+                pass
+
+        # ✅ 关键：不自动关闭窗口
+        print("\nPress Enter to exit...")
+        try:
+            input()
+        except EOFError:
+            pass
 
 
 if __name__ == "__main__":
