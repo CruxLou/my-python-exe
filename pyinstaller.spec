@@ -1,23 +1,47 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
+
+from PyInstaller.utils.hooks import (
+    collect_submodules,
+    collect_data_files,
+    collect_dynamic_libs,
+)
+
 block_cipher = None
 
-# 把下面的入口改成你的实际脚本路径：
-# 如果你保留空格路径：
-entry_script = r'src/for_lab.py'
-# 更推荐的改名后写法（无空格）：
-# entry_script = 'src/for_lab.py'
+# -----------------------------
+# 入口脚本：src/for_lab.py
+# 使用绝对路径，避免 CI/本地工作目录不一致
+# -----------------------------
+ROOT = Path(__file__).resolve().parent
+entry_script = str(ROOT / "src" / "for_lab.py")
 
-datas = [
-    # 如需打包资源文件在此添加：('assets/icon.ico', '.'),
-]
-hiddenimports = [
-    # 某些库需要隐藏导入，可在此补充
-]
+# -----------------------------
+# pywin32 / win32com 常见需要项
+# -----------------------------
+# 1) 收集 win32com 的所有子模块（避免运行时 ImportError）
+hiddenimports = []
+hiddenimports += collect_submodules("win32com")
+hiddenimports += collect_submodules("win32com.client")
+
+# 2) pythoncom / pywintypes 通常是二进制扩展模块，直接列入隐藏导入
+hiddenimports += ["pythoncom", "pywintypes"]
+
+# 3) 收集 pywin32_system32 下的 DLL（非常关键，否则 Word COM 可能异常）
+binaries = []
+binaries += collect_dynamic_libs("pywin32_system32")
+
+# 4) 有时需要带上 pywin32_system32 的数据文件（一般少量）
+datas = []
+datas += collect_data_files("pywin32_system32", include_py_files=False)
+
+# 如需额外资源文件可在此添加，例如：
+# datas += [(str(ROOT / "assets" / "icon.ico"), "assets")]
 
 a = Analysis(
     [entry_script],
-    pathex=[],
-    binaries=[],
+    pathex=[str(ROOT)],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -29,6 +53,10 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# -----------------------------
+# 生成单文件 EXE（onefile）
+# 若你想要文件夹形式（onedir），我也可以给你对应 spec
+# -----------------------------
 exe = EXE(
     pyz,
     a.scripts,
@@ -36,17 +64,16 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='app.exe',
+    name="app",            # ✅ 不要写 app.exe
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    console=True,  # 若是 GUI 程序改为 False
+    upx=False,             # ✅ pywin32 + upx 有时会引发问题，建议先关掉
+    console=True,          # ✅ 先开控制台方便看报错；稳定后可改 False
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,     # 可设置 .ico 图标
+    icon=None,
 )
-``
