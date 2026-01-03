@@ -1,4 +1,4 @@
-name: Windows EXE Build (PyInstaller - minimal)
+name: Windows EXE Build (PyInstaller)
 
 on:
   push:
@@ -15,12 +15,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show repo tree (diagnostic)
-        shell: pwsh
-        run: |
-          Write-Host "Repository tree:"
-          Get-ChildItem -Recurse -Force | Select-Object FullName
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -34,29 +28,33 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Install dependencies
+      - name: Install dependencies (including PyMuPDF)
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
 
+          # Install repo requirements if present
           if (Test-Path "requirements.txt") {
             python -m pip install -r requirements.txt
           }
 
-          # ✅ 必须：安装 PyInstaller（构建工具）
-          python -m pip install pyinstaller
+          # Ensure build tool & runtime deps exist in CI environment
+          python -m pip install --upgrade pyinstaller pywin32 pymupdf
 
-          # ✅ 你的脚本依赖：pywin32
-          python -m pip install pywin32
+          # Avoid wrong "fitz" package conflict; then force reinstall pymupdf
+          # (PyMuPDF docs note this common issue and remediation)
+          pip uninstall -y fitz | Out-Null
+          python -m pip install --force-reinstall pymupdf
 
-          # 可选：打印版本，确认安装成功
-          python -m PyInstaller --version
-
-          # 可选：提前验证关键模块是否能 import
+          # Verify critical imports before packaging
           python -c "import win32com.client; print('win32com ok')"
           python -c "import win32timezone; print('win32timezone ok')"
+          python -c "import pymupdf; print('pymupdf ok', pymupdf.__version__)"
+          python -c "import fitz; print('fitz ok')"
 
-      - name: Build EXE (entry script)
+          python -m PyInstaller --version
+
+      - name: Build EXE (via spec)
         shell: pwsh
         run: |
           Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
@@ -66,11 +64,13 @@ jobs:
             exit 1
           }
 
-          # ✅ 用 python -m PyInstaller，避免 PATH 找不到 pyinstaller 命令
-          python -m PyInstaller --clean --onefile --console --name app.exe `
-            --workpath build --distpath dist `
-            --hidden-import win32timezone `
-            src/for_lab.py
+          if (!(Test-Path "pyinstaller.spec")) {
+            Write-Error "Spec file not found: pyinstaller.spec"
+            exit 1
+          }
+
+          # Build using spec file (spec drives hiddenimports/binaries/datas collection)
+          python -m PyInstaller --clean --noconfirm pyinstaller.spec
 
           Write-Host "Dist contents:"
           Get-ChildItem -Force dist
